@@ -1,0 +1,14 @@
+[package]
+name = "nextcloud-ics-sync"
+authors = ["Jonas Seifried"]
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+dotenv = "0.15.0"
+env_logger = "0.11.8"
+icalendar = "0.17.3"
+log = "0.4.27"
+quick-xml = "0.38.2"
+reqwest = "0.12.23"
+tokio = { version = "1.47.1", features = ["full"] }
