@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use icalendar::Calendar;
-use log::{debug, info, warn};
+use log::{debug, info};
 use reqwest::Client;
 
 pub mod calendar;
@@ -29,12 +29,7 @@ pub async fn sync_calendar(
 
     debug!("Calculating sync diff...");
     for (uid, source_event) in source_events {
-        let b = uids_to_delete.remove(&uid);
-        if !b {
-            warn!("Failed to delete entry for UID: {}", uid);
-        } else {
-            info!("Deleted entry for UID: {}", uid);
-        }
+        uids_to_delete.remove(&uid);
 
         if let Some(existing_event) = nextcloud_events.get(&uid) {
             if calendar::should_skip(&source_event, existing_event) {
@@ -57,12 +52,13 @@ pub async fn sync_calendar(
             nextcloud_calendar_url,
             events_to_upload,
         )
-        .await?;
+        .await
+        .context("Failed to upload events")?;
     } else {
         info!("No new or modified events to upload.");
     }
 
-    debug!("Remaining UIDs to delete: {:?}", uids_to_delete);
+    info!("Uploaded!");
 
     calendar::handle_deletes(
         client,
@@ -73,6 +69,8 @@ pub async fn sync_calendar(
         uids_to_delete,
     )
     .await?;
+
+    info!("Deleted!");
 
     info!("Calendar sync complete. ✅");
     Ok(())

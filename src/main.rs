@@ -1,7 +1,11 @@
 use anyhow::{Context, Ok, Result};
 use dotenv::dotenv;
-use log::{debug, info};
-use nextcloud_ics_sync::{calendar, config::Config, nextcloud, sync_calendar};
+use log::info;
+use nextcloud_ics_sync::{
+    calendar,
+    config::{self, Config},
+    nextcloud, sync_calendar,
+};
 use reqwest::Client;
 
 // TODO: keep custom evens
@@ -12,24 +16,31 @@ use reqwest::Client;
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
-    let config = Config::from_env()?;
     env_logger::init();
 
+    let fetch_calendars = config::load_fetch_calendars()?;
+
     let client = Client::new();
-    if config.fetch_calendars.unwrap_or(false) {
+    if fetch_calendars.unwrap_or(false) {
+        let nextcloud_url = config::load_nextcloud_url()?;
+        let nextcloud_username = config::load_nextcloud_username()?;
+        let nextcloud_password = config::load_nextcloud_password()?;
         let available_calendars = nextcloud::get_calendar_ids(
             &client,
-            &config.nextcloud_url,
-            &config.nextcloud_username,
-            &config.nextcloud_password,
+            &nextcloud_url,
+            &nextcloud_username,
+            &nextcloud_password,
         )
         .await?;
-        info!("Available Calendars: [{}]", available_calendars.join(","))
+        println!(
+            "\nAvailable Calendars: [{}]\n",
+            available_calendars.join(", ")
+        )
     }
 
-    debug!("Starting calendar sync...");
+    let config = Config::from_env()?;
 
-    debug!("Downloading calendar from {}...", config.ics_url);
+    info!("Downloading source calendar from {}...", config.ics_url);
 
     let source_calendar = calendar::fetch_and_parse_calendar(
         &client,
@@ -45,6 +56,11 @@ async fn main() -> Result<()> {
         )
     })?;
 
+    info!(
+        "Downloading nextcloud calendar  {}...",
+        config.nextcloud_calendar_url
+    );
+
     let nextcloud_calendar = calendar::fetch_and_parse_calendar(
         &client,
         &format!("{}?export", &config.nextcloud_calendar_url),
@@ -59,6 +75,8 @@ async fn main() -> Result<()> {
         )
     })?;
 
+    info!("Syncing calendars...");
+
     sync_calendar(
         &client,
         &config.nextcloud_username,
@@ -69,7 +87,7 @@ async fn main() -> Result<()> {
         nextcloud_calendar,
     )
     .await
-    .with_context(|| "Failed to sync calendars.")?;
+    .context("Failed to sync calendars.")?;
 
     info!("Sync process completed.");
     Ok(())

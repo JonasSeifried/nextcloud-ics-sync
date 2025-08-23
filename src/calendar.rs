@@ -5,7 +5,7 @@ use crate::nextcloud;
 use anyhow::{Context, Result, anyhow, bail};
 use futures::future::try_join_all;
 use icalendar::{Calendar, CalendarComponent, Component, Event};
-use log::{debug, error, info};
+use log::{debug, info};
 use reqwest::{Client, StatusCode};
 use urlencoding::encode;
 
@@ -107,37 +107,32 @@ pub async fn handle_uploads(
             let event_calendar = Calendar::new().push(event.clone()).done();
             let event_content = event_calendar.to_string();
 
-            debug!("Uploading event with UID: {}", uid);
-
             let request = client
-                            .put(&upload_url)
+                .put(&upload_url)
                 .basic_auth(&username, Some(&password))
                 .header("Content-Type", "text/calendar")
                 .body(event_content.clone())
                 .build()?;
 
-            let response = client.execute(request)
+            let response = client
+                .execute(request)
                 .await
-                .context(format!(
-                    "Failed to upload event with UID: {}", uid))?;
+                .context(format!("Failed to upload event with UID: {}", uid))?;
 
             match response.status() {
                 StatusCode::OK | StatusCode::CREATED | StatusCode::NO_CONTENT => {
-                    info!("-> Upload successful for UID: {}", uid);
+                    debug!("-> Upload successful for UID: {}", uid);
                     Ok(())
                 }
                 _ => {
                     let status = response.status();
                     let body = response.text().await.unwrap_or_default();
-                    error!(
-                        "-> Failed to upload event with UID: {}. Status: {} \n URL: {} \n event body: {}",
-                        uid, status, upload_url, event_content
-                    );
-                    error!("-> Response body: \n {}", body);
+
                     Err(anyhow::anyhow!(
-                        "Upload failed for UID {} with status {}",
+                        "Upload failed for UID {} with status {} and body of:\n{}",
                         uid,
-                        status
+                        status,
+                        body
                     ))
                 }
             }
@@ -148,6 +143,7 @@ pub async fn handle_uploads(
         .await?
         .into_iter()
         .collect::<Result<()>>()?;
+
     Ok(())
 }
 
@@ -166,6 +162,7 @@ pub async fn handle_deletes(
     }
 
     info!("Deleting {} events...", uids.len());
+
     let tasks = uids.into_iter().map(|uid| {
         let client = client.clone();
         let username = username.to_string();
@@ -184,7 +181,6 @@ pub async fn handle_deletes(
             .await?;
             let delete_url = format!("{}{}", nextcloud_url, href);
 
-            debug!("Deleting event with UID: {}", uid);
             let response = client
                 .delete(&delete_url)
                 .basic_auth(&username, Some(&password))
@@ -194,21 +190,18 @@ pub async fn handle_deletes(
 
             match response.status() {
                 StatusCode::OK | StatusCode::NO_CONTENT => {
-                    info!("-> Deletion successful for UID: {}", uid);
+                    debug!("-> Deletion successful for UID: {}", uid);
                     Ok(())
                 }
                 _ => {
                     let status = response.status();
                     let body = response.text().await.unwrap_or_default();
-                    error!(
-                        "-> Failed to delete event with UID: {}. Status: {}",
-                        uid, status
-                    );
-                    error!("-> Response body: {}", body);
+
                     Err(anyhow::anyhow!(
-                        "Deletion failed for UID {} with status {}",
+                        "Deletion failed for UID {} with status {} and body of:\n{}",
                         uid,
-                        status
+                        status,
+                        body
                     ))
                 }
             }

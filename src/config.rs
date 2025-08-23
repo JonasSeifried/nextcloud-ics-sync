@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use dotenv::dotenv;
 use std::env;
 
 #[derive(Debug)]
@@ -32,30 +31,62 @@ fn get_optional_fetch_config() -> Result<Option<bool>> {
 impl Config {
     // Load configuration from environment variables
     pub fn from_env() -> Result<Self> {
-        dotenv().ok();
-        let nextcloud_url =
-            env::var("NEXTCLOUD_URL").context("NEXTCLOUD_URL environment variable not set")?;
-        let nextcloud_username = env::var("NEXTCLOUD_USERNAME")
-            .context("NEXTCLOUD_USERNAME environment variable not set")?;
+        let nextcloud_url = load_nextcloud_url()?;
 
-        let fetch_calendars = get_optional_fetch_config()?;
+        let nextcloud_username = load_nextcloud_username()?;
+        let fetch_calendars = load_fetch_calendars()?;
 
-        let calendar_id = env::var("CALENDAR_ID").context("CALENDAR_ID not set")?;
+        let calendar_id = load_calendar_id()?;
 
         Ok(Self {
-            ics_url: env::var("ICS_URL").context("ICS_URL environment variable not set")?,
-            ics_username: env::var("ICS_USERNAME").ok(),
-            ics_password: env::var("ICS_PASSWORD").ok(),
+            ics_url: load_ics_url()?,
+            ics_username: load_ics_username().ok(),
+            ics_password: load_ics_password().ok(),
             nextcloud_url: nextcloud_url.clone(),
             nextcloud_calendar_url: format!(
                 "{}/remote.php/dav/calendars/{}/{}/",
                 nextcloud_url, nextcloud_username, calendar_id
             ),
             nextcloud_username: nextcloud_username,
-            nextcloud_password: env::var("NEXTCLOUD_PASSWORD")
-                .context("NEXTCLOUD_PASSWORD environment variable not set")?,
+            nextcloud_password: load_nextcloud_password()?,
             // calendar_id: calendar_id,
             fetch_calendars: fetch_calendars,
         })
     }
+}
+
+fn load_env_var(env_var_key: &str) -> Result<String> {
+    env::var(env_var_key).with_context(|| format!("{} environment variable not set", env_var_key))
+}
+
+pub fn load_fetch_calendars() -> Result<Option<bool>> {
+    get_optional_fetch_config()
+}
+
+pub fn load_ics_url() -> Result<String> {
+    load_env_var("ICS_URL")
+}
+
+pub fn load_ics_username() -> Result<String> {
+    load_env_var("ICS_USERNAME")
+}
+
+pub fn load_ics_password() -> Result<String> {
+    load_env_var("ICS_PASSWORD")
+}
+
+pub fn load_calendar_id() -> Result<String> {
+    load_env_var("CALENDAR_ID")
+}
+
+pub fn load_nextcloud_username() -> Result<String> {
+    load_env_var("NEXTCLOUD_USERNAME")
+}
+
+pub fn load_nextcloud_password() -> Result<String> {
+    load_env_var("NEXTCLOUD_PASSWORD")
+}
+
+pub fn load_nextcloud_url() -> Result<String> {
+    load_env_var("NEXTCLOUD_URL")
 }
