@@ -1,12 +1,63 @@
 use anyhow::{Context, Ok, Result, anyhow, bail};
 use dotenv::dotenv;
-use icalendar::{Calendar, CalendarComponent, Component};
+use icalendar::{Calendar, CalendarComponent, Component, Event};
 use log::{debug, error, info, warn};
 use reqwest::{Client, StatusCode};
 use serde_xml_rs::from_str;
 use std::{collections::HashMap, env};
 
 use serde::{Deserialize, Serialize};
+
+// TODO: keep custom evens
+// TODO: skip event if last_moified didnt change
+// TODO: paralelize request
+// TODO: Merge Calenders (internal and external)
+
+#[derive(Debug)]
+struct Config {
+    ics_url: String,
+    ics_username: Option<String>,
+    ics_password: Option<String>,
+    nextcloud_url: String,
+    nextcloud_username: String,
+    nextcloud_password: String,
+    calendar_id: Result<String>,
+    fetch_calendars: Option<bool>,
+}
+
+fn get_optional_fetch_config() -> Result<Option<bool>> {
+    match env::var("FETCH_CALENDARS") {
+        core::result::Result::Ok(val_str) => {
+            let value = val_str.parse::<bool>().context(format!(
+                "'FETCH_CALENDARS' is invalid: could not parse '{}' as a boolean",
+                val_str
+            ))?;
+            Ok(Some(value))
+        }
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(e) => Err(e).context("'FETCH_CALENDARS' contained invalid unicode"),
+    }
+}
+
+impl Config {
+    // Load configuration from environment variables
+    fn from_env() -> Result<Self> {
+        dotenv().ok();
+        Ok(Self {
+            ics_url: env::var("ICS_URL").context("ICS_URL environment variable not set")?,
+            ics_username: env::var("ICS_USERNAME").ok(),
+            ics_password: env::var("ICS_PASSWORD").ok(),
+            nextcloud_url: env::var("NEXTCLOUD_URL")
+                .context("NEXTCLOUD_URL environment variable not set")?,
+            nextcloud_username: env::var("NEXTCLOUD_USERNAME")
+                .context("NEXTCLOUD_USERNAME environment variable not set")?,
+            nextcloud_password: env::var("NEXTCLOUD_PASSWORD")
+                .context("NEXTCLOUD_PASSWORD environment variable not set")?,
+            calendar_id: env::var("CALENDAR_ID").context("CALENDAR_ID not set"),
+            fetch_calendars: get_optional_fetch_config()?,
+        })
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename = "multistatus")]
@@ -126,171 +177,153 @@ async fn get_calendar_ids(
     Ok(ids)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    dotenv().ok();
-    env_logger::init();
-    // Ensure these variables are set in your environment or a `.env` file.
-    let ics_url = env::var("ICS_URL").context("ICS_URL environment variable not set.")?;
-    let ics_username = env::var("ICS_USERNAME").ok();
-    let ics_password = env::var("ICS_PASSWORD").ok();
-    let nextcloud_url = env::var("NEXTCLOUD_URL")?;
-    let nextcloud_username = env::var("NEXTCLOUD_USERNAME")
-        .context("NEXTCLOUD_USERNAME environment variable not set.")?;
-    let nextcloud_password = env::var("NEXTCLOUD_PASSWORD")
-        .context("NEXTCLOUD_PASSWORD environment variable not set.")?;
+async fn fetch_and_parse_calendar(
+    client: &Client,
+    url: &str,
+    username: Option<String>,
+    password: Option<String>,
+) -> Result<Calendar> {
+    let mut request_builder = client.get(url);
 
-    let fetch_calendars = env::var("FETCH_CALENDARS").ok();
-
-    let client = Client::new();
-    if let Some(fetch_calendars) = fetch_calendars
-        && fetch_calendars.ne("false")
-    {
-        let available_calendars = get_calendar_ids(
-            &client,
-            &nextcloud_url,
-            &nextcloud_username,
-            &nextcloud_password,
-        )
-        .await?;
-        info!("Available Calendars: [{}]", available_calendars.join(","))
-    }
-
-    let calendar_id =
-        env::var("CALENDAR_ID").context("CALENDAR_ID environment variable not set.")?;
-
-    debug!("Starting calendar sync...");
-
-    debug!("Downloading calendar from {}...", ics_url);
-
-    let mut request_builder = client.get(&ics_url);
-
-    if let Some(ics_username) = ics_username {
-        request_builder = request_builder.basic_auth(ics_username, ics_password);
+    if let Some(ics_username) = username {
+        request_builder = request_builder.basic_auth(ics_username, password);
     }
 
     let response = request_builder
         .send()
         .await
-        .context("Failed to download ICS file.")?;
+        .with_context(|| format!("Failed to download ICS file. URL: {}", url))?;
 
     if !response.status().is_success() {
         bail!(
-            "Failed to download ICS file. Status code: {}",
-            response.status()
+            "Failed to download ICS file. Status code: {} URL: {}",
+            response.status(),
+            url
         );
     }
 
     let ics_content = response
         .bytes()
         .await
-        .context("Failed to read ICS content.")?;
+        .with_context(|| format!("Failed to read ICS content. URL: {}", url))?;
 
-    let ics_text = str::from_utf8(&ics_content).context("Invalid UTF-8 in ICS content")?;
+    let ics_text = str::from_utf8(&ics_content)
+        .with_context(|| format!("Invalid UTF-8 in ICS content. URL: {}", url))?;
 
-    let source_calendar = ics_text
+    ics_text
         .parse::<Calendar>()
         .map_err(|e: String| (anyhow!(e)))
-        .context("Failed to parse iCalendar content")?;
+        .with_context(|| format!("Failed to parse iCalendar content. URL: {}", url))
+}
 
-    let mut source_uids: HashMap<String, Calendar> = HashMap::new();
+async fn sync_calendar(
+    client: &Client,
+    nextcloud_username: &str,
+    nextcloud_password: &str,
+    nextcloud_calendar_base_url: &str,
+    source_calendar: Calendar,
+    nextcloud_calendar: Calendar,
+) -> Result<()> {
+    let mut source_events: HashMap<String, Event> = HashMap::new();
     for component in source_calendar.components {
         if let CalendarComponent::Event(event) = component {
             if let Some(uid) = event.get_uid() {
-                let mut c = Calendar::new();
-                c.push(event.to_owned());
-                source_uids.insert(uid.to_string(), c);
+                source_events.insert(uid.replace("/", "%25"), event);
             }
         }
     }
 
-    info!("Calendar downloaded successfully.");
-
-    let base_url = format!(
-        "{}/remote.php/dav/calendars/{}/{}/",
-        nextcloud_url, nextcloud_username, calendar_id
-    );
-
-    info!("Nextcloud URL: {}?export", base_url);
-
-    let response2 = client
-        .get(format!("{}?export", base_url))
-        .basic_auth(&nextcloud_username, Some(&nextcloud_password))
-        .send()
-        .await
-        .context("Failed to download ICS file.")?;
-
-    let ics_content2 = response2
-        .bytes()
-        .await
-        .context("Failed to read ICS content.")?;
-
-    let ics_text2 = str::from_utf8(&ics_content2).expect("Invalid UTF-8 in ICS content");
-
-    let current_calendar: Calendar = ics_text2
-        .parse()
-        .expect("Failed to parse iCalendar content");
-
-    let mut existing_events: HashMap<String, Calendar> = HashMap::new();
-    for component in current_calendar.components {
+    let mut nexcloud_events: HashMap<String, Event> = HashMap::new();
+    for component in nextcloud_calendar.components {
         if let CalendarComponent::Event(event) = component {
             if let Some(uid) = event.get_uid() {
-                if uid == "947c6a8c-ee0b-4643-aa00-78d239202300" {
-                    warn!("{}", event.get_uid().unwrap())
-                }
-                let mut c = Calendar::new();
-                c.push(event.to_owned());
-                existing_events.insert(uid.to_string(), c);
+                nexcloud_events.insert(uid.replace("/", "%25"), event);
             }
         }
     }
-    let mut uids_to_delete: Vec<String> = existing_events.keys().cloned().collect();
+
+    let mut uids_to_delete: Vec<String> = nexcloud_events.keys().cloned().collect();
+
+    let mut join_handles = Vec::new();
 
     info!("Starting sync of events...");
-    for (uid, event_calendar) in source_uids {
+    for (uid, event) in source_events {
         let uid = uid.replace("/", "%25");
 
         uids_to_delete.retain(|x| x.eq(&uid));
 
-        let upload_url = format!("{}{}.ics", base_url, uid);
+        if let (Some(existing_event), Some(event_last_modified)) =
+            (nexcloud_events.get(&uid), event.get_last_modified())
+        {
+            if existing_event
+                .get_last_modified()
+                .map(|existing_last_modified| existing_last_modified == event_last_modified)
+                .unwrap_or(false)
+            {
+                info!("Skipping event with UID: {}", uid);
+                continue;
+            }
+        }
+
+        let event_calendar = Calendar::new().push(event).done();
+
+        let upload_url = format!("{}{}.ics", nextcloud_calendar_base_url, uid);
         let event_content = event_calendar.to_string();
 
         debug!("Attempting to upload event with UID: {}", uid);
-        let response = client
-            .put(&upload_url)
-            .basic_auth(&nextcloud_username, Some(&nextcloud_password))
-            .header("Content-Type", "text/calendar")
-            .body(event_content)
-            .send()
-            .await
-            .context("Failed to upload event.")?;
 
-        match response.status() {
-            StatusCode::OK | StatusCode::CREATED | StatusCode::NO_CONTENT => {
-                info!("  -> Upload successful for UID: {}", uid);
+        let client = client.clone();
+        let uid = uid.clone();
+        let upload_url = upload_url.clone();
+        let nextcloud_username = nextcloud_username.to_string();
+        let nextcloud_password = nextcloud_password.to_string();
+
+        let future = async move {
+            let response = client
+                .put(&upload_url)
+                .basic_auth(nextcloud_username, Some(nextcloud_password))
+                .header("Content-Type", "text/calendar")
+                .body(event_content)
+                .send()
+                .await
+                .context("Failed to upload event.")?;
+
+            match response.status() {
+                StatusCode::OK | StatusCode::CREATED | StatusCode::NO_CONTENT => {
+                    info!("  -> Upload successful for UID: {}", uid);
+                }
+                _ => {
+                    error!(
+                        "  -> Failed to upload event with UID: {}. Status code: {}",
+                        uid,
+                        response.status()
+                    );
+                    error!(
+                        "  -> Response body: {:?}",
+                        response.text().await.unwrap_or_default()
+                    );
+                }
             }
-            _ => {
-                error!(
-                    "  -> Failed to upload event with UID: {}. Status code: {}",
-                    uid,
-                    response.status()
-                );
-                error!(
-                    "  -> Response body: {:?}",
-                    response.text().await.unwrap_or_default()
-                );
-            }
-        }
+
+            Ok(())
+        };
+
+        let handle = tokio::spawn(future);
+        join_handles.push(handle);
+    }
+
+    for handle in join_handles {
+        handle.await??;
     }
 
     info!("Checking for events to delete...");
     for uid in uids_to_delete {
         let uid = uid.replace("/", "%25");
-        let delete_url = format!("{}{}.ics", base_url, uid);
+        let delete_url = format!("{}{}.ics", nextcloud_calendar_base_url, uid);
         info!("Attempting to delete event with UID: {}", uid);
         let response = client
             .delete(&delete_url)
-            .basic_auth(&nextcloud_username, Some(&nextcloud_password))
+            .basic_auth(nextcloud_username, Some(nextcloud_password))
             .send()
             .await
             .context("Failed to delete event.")?;
@@ -312,6 +345,76 @@ async fn main() -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenv().ok();
+    let config = Config::from_env()?;
+    env_logger::init();
+
+    let client = Client::new();
+    if config.fetch_calendars.unwrap_or(false) {
+        let available_calendars = get_calendar_ids(
+            &client,
+            &config.nextcloud_url,
+            &config.nextcloud_username,
+            &config.nextcloud_password,
+        )
+        .await?;
+        info!("Available Calendars: [{}]", available_calendars.join(","))
+    }
+
+    let calendar_id = config.calendar_id?;
+
+    debug!("Starting calendar sync...");
+
+    debug!("Downloading calendar from {}...", config.ics_url);
+
+    let source_calendar = fetch_and_parse_calendar(
+        &client,
+        &config.ics_url,
+        config.ics_username,
+        config.ics_password,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to fetch and parse source calendar. URL: {}",
+            config.ics_url
+        )
+    })?;
+
+    let nextcloud_calendar_base_url = format!(
+        "{}/remote.php/dav/calendars/{}/{}/",
+        config.nextcloud_url, config.nextcloud_username, calendar_id
+    );
+
+    let nextcloud_calendar = fetch_and_parse_calendar(
+        &client,
+        &format!("{}?export", nextcloud_calendar_base_url),
+        Some(config.nextcloud_username.clone()),
+        Some(config.nextcloud_password.clone()),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to fetch and parse current calendar. URL: {}?export",
+            nextcloud_calendar_base_url
+        )
+    })?;
+
+    sync_calendar(
+        &client,
+        &config.nextcloud_username,
+        &config.nextcloud_password,
+        &nextcloud_calendar_base_url,
+        source_calendar,
+        nextcloud_calendar,
+    )
+    .await
+    .with_context(|| "Failed to sync calendars.")?;
 
     info!("Sync process completed.");
     Ok(())
