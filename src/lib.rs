@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 
-use icalendar::Calendar;
+use icalendar::{Calendar, Component};
 use log::{debug, info};
 use reqwest::Client;
 
@@ -25,7 +25,11 @@ pub async fn sync_calendar(
 
     // 2. Determine which events to create/update and which to delete.
     let mut events_to_upload = Vec::new();
-    let mut uids_to_delete: HashSet<String> = nextcloud_events.keys().cloned().collect();
+    let mut uids_to_delete: HashSet<String> = nextcloud_events
+        .iter()
+        .filter(|(_, event)| event.property_value("X-SYNCED").is_some())
+        .map(|(uid, _)| uid.clone())
+        .collect();
 
     debug!("Calculating sync diff...");
     for (uid, source_event) in source_events {
@@ -69,8 +73,6 @@ pub async fn sync_calendar(
         uids_to_delete,
     )
     .await?;
-
-    info!("Deleted!");
 
     info!("Calendar sync complete. ✅");
     Ok(())

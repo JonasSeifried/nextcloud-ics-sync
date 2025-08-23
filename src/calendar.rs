@@ -52,6 +52,7 @@ fn process_event(mut event: Event) -> Event {
     if let Some(uid) = event.get_uid() {
         let encoded_uid = encode(uid).into_owned().replace("%2F", "-");
         event.uid(&encoded_uid);
+        event.add_property("X-SYNCED", "TRUE");
     }
     event
 }
@@ -212,5 +213,8 @@ pub async fn handle_deletes(
         .await?
         .into_iter()
         .collect::<Result<()>>()?;
+
+    info!("Deleted!");
+
     Ok(())
 }

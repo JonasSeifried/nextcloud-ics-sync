@@ -1,6 +1,6 @@
 # Nextcloud ICS Sync
 
-A simple, efficient tool to synchronize a remote iCalendar (`.ics`) feed to a Nextcloud calendar. It keeps your Nextcloud calendar up-to-date with an external source, handling additions, updates, and deletions automatically.
+A simple, efficient tool to synchronize a remote iCalendar (`.ics`) feed to an existing Nextcloud calendar. It keeps your Nextcloud calendar up-to-date with an external source, handling additions, updates, and deletions automatically while ignoring events not imported with this tool.
 
 This is perfect for syncing read-only calendars from services like university schedules, public holidays, or other systems that provide an ICS link.
 
@@ -27,19 +27,25 @@ The application is configured entirely through environment variables. You can pl
 | `ICS_USERNAME`       |    No    | The username for basic authentication on the source ICS feed, if required.                           |
 | `ICS_PASSWORD`       |    No    | The password for basic authentication on the source ICS feed, if required.                           |
 | `FETCH_CALENDARS`    |    No    | If set to `true`, the tool will list your available calendar IDs and then exit. Defaults to `false`. |
-| `RUST_LOG`           |    No    | Sets the logging level. E.g., `info` (default), `debug`, `warn`, `error`.                            |
+| `RUST_LOG`           |    No    | Sets the logging level. E.g., `INFO`, `DEBUG`, `WARN`, `ERROR` (default).                            |
 
 ### Example `.env` file
 
 ```env
-NEXTCLOUD_URL=https://cloud.example.com
+
+NEXTCLOUD_URL=https://nextcloud.example.com
 NEXTCLOUD_USERNAME=myuser
 NEXTCLOUD_PASSWORD=xxxx-xxxx-xxxx-xxxx
-CALENDAR_ID=personal
-ICS_URL=https://example.com/path/to/my/calendar.ics
 
-# Optional: Set log level to see more details
-RUST_LOG=debug
+# Required for sync
+CALENDAR_ID=work
+ICS_URL=https://example.com/path/to/my/work/calendar.ics
+
+# Optionals
+RUST_LOG=INFO
+FETCH_CALENDARS=false
+ICS_USERNAME=user
+ICS_PASSWORD=xxxx-xxxx-xxxx-xxxx
 ```
 
 ## Usage
@@ -49,10 +55,10 @@ RUST_LOG=debug
 If you don't know the ID of the calendar you want to sync to, you can find it easily:
 
 1.  Create a temporary `.env` file with your `NEXTCLOUD_*` credentials.
-2.  Add the line `FETCH_CALENDARS=true`.
-3.  Run the application: `./nextcloud-ics-sync`
-4.  The application will print a list of your available calendars and their corresponding IDs, like `Available Calendars: [personal,work,birthdays]`.
-5.  Copy the desired ID into your final `.env` file as `CALENDAR_ID`.
+1.  Add the line `FETCH_CALENDARS=true`.
+1.  Run the application: `./nextcloud-ics-sync`
+1.  The application will print a list of your available calendars and their corresponding IDs, like `Available Calendars: [personal,work,birthdays]`.
+1.  Copy the desired ID into your final `.env` file as `CALENDAR_ID`.
 
 ### 2. Run the Sync
 
@@ -63,6 +69,10 @@ Once your `.env` file is fully configured, simply run the executable:
 ```
 
 The application will perform the sync and log its progress to the console. You can run this executable on a schedule (e.g., using a cron job or a systemd timer) to keep your calendar continuously updated.
+
+### 3. Automation
+
+You can run this executable on a schedule (e.g., using a **cron job** or a **systemd timer**) to keep your calendar continuously updated.
 
 ## Building from Source
 
