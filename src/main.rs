@@ -27,7 +27,7 @@ struct Config {
     nextcloud_calendar_url: String,
     nextcloud_username: String,
     nextcloud_password: String,
-    calendar_id: String,
+    // calendar_id: String,
     fetch_calendars: Option<bool>,
 }
 
@@ -70,7 +70,7 @@ impl Config {
             nextcloud_username: nextcloud_username,
             nextcloud_password: env::var("NEXTCLOUD_PASSWORD")
                 .context("NEXTCLOUD_PASSWORD environment variable not set")?,
-            calendar_id: calendar_id,
+            // calendar_id: calendar_id,
             fetch_calendars: fetch_calendars,
         })
     }
