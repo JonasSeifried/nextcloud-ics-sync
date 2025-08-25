@@ -2,9 +2,8 @@ use anyhow::{Context, Ok, Result};
 use dotenv::dotenv;
 use log::info;
 use nextcloud_ics_sync::{
-    calendar,
     config::{self, Config},
-    nextcloud, sync_calendar,
+    ics_parser, nextcloud, sync_calendar,
 };
 use reqwest::Client;
 
@@ -25,7 +24,7 @@ async fn main() -> Result<()> {
         let nextcloud_url = config::load_nextcloud_url()?;
         let nextcloud_username = config::load_nextcloud_username()?;
         let nextcloud_password = config::load_nextcloud_password()?;
-        let available_calendars = nextcloud::get_calendar_ids(
+        let available_calendars = nextcloud::api::get_calendar_ids(
             &client,
             &nextcloud_url,
             &nextcloud_username,
@@ -42,7 +41,7 @@ async fn main() -> Result<()> {
 
     info!("Downloading source calendar from {}...", config.ics_url);
 
-    let source_calendar = calendar::fetch_and_parse_calendar(
+    let source_calendar = ics_parser::fetch_and_parse_calendar(
         &client,
         &config.ics_url,
         config.ics_username,
@@ -61,7 +60,7 @@ async fn main() -> Result<()> {
         config.nextcloud_calendar_url
     );
 
-    let nextcloud_calendar = calendar::fetch_and_parse_calendar(
+    let nextcloud_calendar = ics_parser::fetch_and_parse_calendar(
         &client,
         &format!("{}?export", &config.nextcloud_calendar_url),
         Some(config.nextcloud_username.clone()),
@@ -81,7 +80,6 @@ async fn main() -> Result<()> {
         &client,
         &config.nextcloud_username,
         &config.nextcloud_password,
-        &config.nextcloud_url,
         &config.nextcloud_calendar_url,
         source_calendar,
         nextcloud_calendar,

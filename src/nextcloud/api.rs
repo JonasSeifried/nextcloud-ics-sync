@@ -1,89 +1,63 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::nextcloud;
+use anyhow::{Context, Result};
+use reqwest::{Client, StatusCode};
+use serde_xml_rs::from_str;
 
-use anyhow::{Context, Result, anyhow, bail};
 use futures::future::try_join_all;
 use icalendar::{Calendar, CalendarComponent, Component, Event};
 use log::{debug, info};
-use reqwest::{Client, StatusCode};
-use urlencoding::encode;
 
-pub async fn fetch_and_parse_calendar(
+use super::{models::Multistatus, utils};
+
+pub async fn get_calendar_ids(
     client: &Client,
-    url: &str,
-    username: Option<String>,
-    password: Option<String>,
-) -> Result<Calendar> {
-    let mut request_builder = client.get(url);
+    nextcloud_url: &str,
+    username: &str,
+    password: &str,
+) -> Result<Vec<String>> {
+    let propfind_body = r#"<?xml version="1.0" encoding="UTF-8"?>
+  <d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
+    <d:prop>
+      <d:displayname/>
+      <cs:getctag/>
+      <d:resourcetype/>
+      <d:owner/>
+    </d:prop>
+  </d:propfind>"#;
 
-    if let Some(ics_username) = username {
-        request_builder = request_builder.basic_auth(ics_username, password);
-    }
+    let url = format!("{}/remote.php/dav/calendars/{}/", nextcloud_url, username);
 
-    let response = request_builder
+    let response = client
+        .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
+        .basic_auth(username, Some(password))
+        .header("Depth", "1")
+        .header("Content-Type", "application/xml")
+        .body(propfind_body)
         .send()
         .await
-        .with_context(|| format!("Failed to download ICS file. URL: {}", url))?;
+        .context("Failed to send PROPFIND request to get calendar IDs")?;
 
-    if !response.status().is_success() {
-        bail!(
-            "Failed to download ICS file. Status code: {} URL: {}",
-            response.status(),
-            url
-        );
-    }
-
-    let ics_content = response
-        .bytes()
+    let xml_data = response
+        .text()
         .await
-        .with_context(|| format!("Failed to read ICS content. URL: {}", url))?;
+        .context("Failed to read PROPFIND response body for calendar IDs")?;
 
-    let ics_text = str::from_utf8(&ics_content)
-        .with_context(|| format!("Invalid UTF-8 in ICS content. URL: {}", url))?;
-
-    ics_text
-        .parse::<Calendar>()
-        .map_err(|e: String| (anyhow!(e)))
-        .with_context(|| format!("Failed to parse iCalendar content. URL: {}", url))
-}
-
-fn process_event(mut event: Event) -> Event {
-    if let Some(uid) = event.get_uid() {
-        let encoded_uid = encode(uid).into_owned().replace("%2F", "-");
-        event.uid(&encoded_uid);
-        event.add_property("X-SYNCED", "TRUE");
-    }
-    event
-}
-
-pub fn extract_events(calendar: Calendar, process_events: bool) -> HashMap<String, Event> {
-    calendar
-        .components
-        .into_iter()
-        .filter_map(|component| {
-            if let CalendarComponent::Event(event) = component {
-                let event = if process_events {
-                    process_event(event)
-                } else {
-                    event
-                };
-                event.clone().get_uid().map(|uid| (uid.to_string(), event))
-            } else {
-                None
-            }
+    let multistatus = from_str::<Multistatus>(&xml_data)?;
+    let ids = multistatus
+        .responses
+        .iter()
+        .filter(|r| {
+            r.propstats.iter().all(|p| {
+                p.prop
+                    .resourcetype
+                    .as_ref()
+                    .is_some_and(|t| t.calendar_deleted.is_none())
+            })
         })
-        .collect()
-}
-
-pub fn should_skip(source_event: &Event, existing_event: &Event) -> bool {
-    match (
-        source_event.get_last_modified(),
-        existing_event.get_last_modified(),
-    ) {
-        (Some(source_ts), Some(existing_ts)) => source_ts == existing_ts,
-        _ => false,
-    }
+        .filter_map(|r| utils::get_calendar_id_after_username(&r.href, username))
+        .collect();
+    Ok(ids)
 }
 
 /// Handles the concurrent upload of multiple events to Nextcloud.
@@ -101,7 +75,9 @@ pub async fn handle_uploads(
         let base_url = base_url.to_string();
 
         tokio::spawn(async move {
-            let uid = &event.get_uid().unwrap_or_default();
+            let uid = event
+                .get_uid()
+                .context("Event is missing a UID, cannot upload.")?;
             // URL-encode the UID for the path segment.
             let upload_url = format!("{}{}.ics", base_url, uid);
 
@@ -118,7 +94,7 @@ pub async fn handle_uploads(
             let response = client
                 .execute(request)
                 .await
-                .context(format!("Failed to upload event with UID: {}", uid))?;
+                .with_context(|| format!("Failed to upload event with UID: {}", uid))?;
 
             match response.status() {
                 StatusCode::OK | StatusCode::CREATED | StatusCode::NO_CONTENT => {
@@ -153,7 +129,6 @@ pub async fn handle_deletes(
     client: &Client,
     username: &str,
     password: &str,
-    nextcloud_url: &str,
     nextcloud_calendar_url: &str,
     uids: HashSet<String>,
 ) -> Result<()> {
@@ -168,19 +143,10 @@ pub async fn handle_deletes(
         let client = client.clone();
         let username = username.to_string();
         let password = password.to_string();
-        let nextcloud_url = nextcloud_url.to_string();
         let nextcloud_calendar_url = nextcloud_calendar_url.to_string();
 
         tokio::spawn(async move {
-            let href: String = nextcloud::get_href_by_uid(
-                &client,
-                &nextcloud_calendar_url,
-                &username,
-                &password,
-                &uid,
-            )
-            .await?;
-            let delete_url = format!("{}{}", nextcloud_url, href);
+            let delete_url = format!("{}{}.ics", nextcloud_calendar_url, uid);
 
             let response = client
                 .delete(&delete_url)
@@ -217,4 +183,33 @@ pub async fn handle_deletes(
     info!("Deleted!");
 
     Ok(())
+}
+
+pub fn should_skip(source_event: &Event, existing_event: &Event) -> bool {
+    match (
+        source_event.get_last_modified(),
+        existing_event.get_last_modified(),
+    ) {
+        (Some(source_ts), Some(existing_ts)) => source_ts == existing_ts,
+        _ => false,
+    }
+}
+
+pub fn extract_events(calendar: Calendar, process_events: bool) -> HashMap<String, Event> {
+    calendar
+        .components
+        .into_iter()
+        .filter_map(|component| {
+            if let CalendarComponent::Event(event) = component {
+                let event = if process_events {
+                    utils::process_event(event)
+                } else {
+                    event
+                };
+                event.clone().get_uid().map(|uid| (uid.to_string(), event))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
