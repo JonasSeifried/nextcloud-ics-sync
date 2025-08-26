@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Ok, Result};
 
 use icalendar::{Calendar, Component, Event};
 use log::{debug, info};
@@ -10,16 +10,20 @@ pub mod config;
 pub mod ics_parser;
 pub mod nextcloud;
 
-pub fn calculate_diff<'a>(
+fn get_synced_uids(events: &HashMap<String, Event>) -> HashSet<String> {
+    events
+        .iter()
+        .filter(|(_, event)| event.property_value("X-SYNCED").is_some())
+        .map(|(uid, _)| uid.clone())
+        .collect()
+}
+
+fn calculate_diff<'a>(
     source_events: &'a HashMap<String, Event>,
     nextcloud_events: &HashMap<String, Event>,
 ) -> (Vec<&'a Event>, HashSet<String>) {
     let mut events_to_upload = Vec::new();
-    let mut uids_to_delete: HashSet<String> = nextcloud_events
-        .iter()
-        .filter(|(_, event)| event.property_value("X-SYNCED").is_some())
-        .map(|(uid, _)| uid.clone())
-        .collect();
+    let mut uids_to_delete: HashSet<String> = get_synced_uids(nextcloud_events);
 
     debug!("Calculating sync diff...");
     for (uid, source_event) in source_events {
@@ -86,4 +90,26 @@ pub async fn sync_calendar(
 
     info!("Calendar sync complete. ✅");
     Ok(())
+}
+
+pub async fn delete_synced_events(
+    client: &Client,
+    nextcloud_calendar: Calendar,
+    nextcloud_calendar_url: &str,
+    username: &str,
+    password: &str,
+) -> Result<()> {
+    info!("Deleting all synced events...");
+
+    let nextcloud_events = nextcloud::api::extract_events(nextcloud_calendar, false);
+    let uids_to_delete: HashSet<String> = get_synced_uids(&nextcloud_events);
+
+    nextcloud::api::handle_deletes(
+        client,
+        username,
+        password,
+        nextcloud_calendar_url,
+        uids_to_delete,
+    )
+    .await
 }
