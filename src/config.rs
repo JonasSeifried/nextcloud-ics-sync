@@ -11,21 +11,6 @@ pub struct Config {
     pub nextcloud_username: String,
     pub nextcloud_password: String,
     // pub calendar_id: String,
-    pub fetch_calendars: Option<bool>,
-}
-
-fn get_optional_fetch_config() -> Result<Option<bool>> {
-    match env::var("FETCH_CALENDARS") {
-        core::result::Result::Ok(val_str) => {
-            let value = val_str.parse::<bool>().context(format!(
-                "'FETCH_CALENDARS' is invalid: could not parse '{}' as a boolean",
-                val_str
-            ))?;
-            Ok(Some(value))
-        }
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(e) => Err(e).context("'FETCH_CALENDARS' contained invalid unicode"),
-    }
 }
 
 impl Config {
@@ -34,8 +19,6 @@ impl Config {
         let nextcloud_url = load_nextcloud_url()?;
 
         let nextcloud_username = load_nextcloud_username()?;
-        let fetch_calendars = load_fetch_calendars()?;
-
         let calendar_id = load_calendar_id()?;
 
         Ok(Self {
@@ -50,17 +33,12 @@ impl Config {
             nextcloud_username: nextcloud_username,
             nextcloud_password: load_nextcloud_password()?,
             // calendar_id: calendar_id,
-            fetch_calendars: fetch_calendars,
         })
     }
 }
 
 fn load_env_var(env_var_key: &str) -> Result<String> {
     env::var(env_var_key).with_context(|| format!("{} environment variable not set", env_var_key))
-}
-
-pub fn load_fetch_calendars() -> Result<Option<bool>> {
-    get_optional_fetch_config()
 }
 
 pub fn load_ics_url() -> Result<String> {
