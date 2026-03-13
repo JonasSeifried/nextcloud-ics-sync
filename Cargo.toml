@@ -1,20 +1,20 @@
 [package]
 name = "nextcloud-ics-sync"
 authors = ["Jonas Seifried"]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.99"
-clap = { version = "4.5.45", features = ["derive"] }
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive"] }
 dotenv = "0.15.0"
-env_logger = "0.11.8"
-futures = "0.3.31"
-icalendar = "0.17.3"
-log = "0.4.27"
-quick-xml = "0.38.3"
-reqwest = "0.12.23"
+env_logger = "0.11.9"
+futures = "0.3.32"
+icalendar = "0.17.6"
+log = "0.4.29"
+quick-xml = "0.38.4"
+reqwest = "0.12.28"
 serde = { version = "1", features = ["derive"] }
 serde-xml-rs = "0.8"
-tokio = { version = "1.47.1", features = ["full"] }
+tokio = { version = "1.50.0", features = ["full"] }
 urlencoding = "2.1.3"

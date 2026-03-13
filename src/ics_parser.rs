@@ -43,11 +43,11 @@ pub async fn fetch_and_parse_calendar(
         .await
         .with_context(|| format!("Failed to read ICS content. URL: {}", url))?;
 
-    let ics_text = str::from_utf8(&ics_content)
+    let ics_text = std::str::from_utf8(&ics_content)
         .with_context(|| format!("Invalid UTF-8 in ICS content. URL: {}", url))?;
 
     ics_text
         .parse::<Calendar>()
-        .map_err(|e: String| (anyhow!(e)))
+        .map_err(|e: String| anyhow!(e))
         .with_context(|| format!("Failed to parse iCalendar content. URL: {}", url))
 }

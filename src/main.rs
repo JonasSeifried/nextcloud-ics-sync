@@ -1,5 +1,5 @@
 use anyhow::{Context, Ok, Result};
-use clap::{Parser, Subcommand, command};
+use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use log::info;
 use nextcloud_ics_sync::{
